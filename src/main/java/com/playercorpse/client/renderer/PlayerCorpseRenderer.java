@@ -417,6 +417,99 @@ public class PlayerCorpseRenderer extends LivingEntityRenderer<PlayerCorpseEntit
 
       public void setupAnim(PlayerCorpseEntity entity, float limbSwing, float limbSwingAmount, float ageInTicks, float netHeadYaw, float headPitch) {
          super.setupAnim(entity, 0.0F, 0.0F, 0.0F, netHeadYaw, headPitch);
+         // Every field NOT touched by the super call above (visibility, scale, this model's own
+         // ash-specific y offset) must still be explicitly reset here every call, unconditionally,
+         // BEFORE checking this entity's own phase. this.head/body/etc. are the SAME shared
+         // ModelPart objects reused across every corpse rendered through this one renderer instance
+         // (one renderer instance per registered entity TYPE, not per entity - RECOVERY.md section 7's
+         // priority bug: rendering state held on the model object bleeds between simultaneous
+         // corpses). Skipping this reset would let one corpse's ash-hidden/scaled/sunk state
+         // visibly leak into a different corpse's render call.
+         this.resetAshState();
+         if (entity.getDecayPhase() == DecayPhase.ASH) {
+            this.applyAshDeformation(DecayCurves.ashCollapseCurve(entity.getPhaseProgress()));
+         }
+      }
+
+      private void resetAshState() {
+         this.head.visible = true;
+         this.hat.visible = true;
+         this.body.visible = true;
+         this.leftArm.visible = true;
+         this.rightArm.visible = true;
+         this.leftLeg.visible = true;
+         this.rightLeg.visible = true;
+         this.head.xScale = this.head.yScale = this.head.zScale = 1.0F;
+         this.body.xScale = this.body.yScale = this.body.zScale = 1.0F;
+         this.leftArm.xScale = this.leftArm.yScale = this.leftArm.zScale = 1.0F;
+         this.rightArm.xScale = this.rightArm.yScale = this.rightArm.zScale = 1.0F;
+         this.leftLeg.xScale = this.leftLeg.yScale = this.leftLeg.zScale = 1.0F;
+         this.rightLeg.xScale = this.rightLeg.yScale = this.rightLeg.zScale = 1.0F;
+         this.body.y = 0.0F;
+      }
+
+      /**
+       * All magnitudes kept within RECOVERY.md section 7's stated bounds
+       * (rotations <= 0.30 rad, translation <= 0.6 units) so this reads as
+       * structural giving-way, not wobbling. UNVERIFIED visually - this
+       * environment cannot render Minecraft; the sign/direction of every
+       * offset below (which way is "down", which way is "outward") is my
+       * best-effort reasoning about Minecraft's model-space axes, not
+       * confirmed against an actual rendered corpse.
+       */
+      private void applyAshDeformation(float effective) {
+         float limbsT = DecayCurves.ashPoseT(effective, DecayCurves.ASH_HIDE_LIMBS_AT);
+         float headT = DecayCurves.ashPoseT(effective, DecayCurves.ASH_HIDE_HEAD_AT);
+         float bodyT = DecayCurves.ashPoseT(effective, DecayCurves.ASH_HIDE_BODY_AT);
+
+         // Limbs: droop down and splay outward, mirrored left/right. Both rotation axes are fine
+         // here - unlike the head, limbs are texture-less bones with no asymmetric jaw-pivoted
+         // face to reveal a corkscrew artifact (rendering lesson 3 below only applies to the head).
+         float droop = 0.30F * limbsT;
+         float splay = 0.22F * limbsT;
+         this.rightArm.xRot += droop;
+         this.rightArm.zRot += splay;
+         this.leftArm.xRot += droop;
+         this.leftArm.zRot -= splay;
+         this.rightLeg.xRot += droop;
+         this.rightLeg.zRot += splay * 0.5F;
+         this.leftLeg.xRot += droop;
+         this.leftLeg.zRot -= splay * 0.5F;
+         boolean limbsHidden = effective >= DecayCurves.ASH_HIDE_LIMBS_AT;
+         setVanishing(this.rightArm, limbsT, limbsHidden);
+         setVanishing(this.leftArm, limbsT, limbsHidden);
+         setVanishing(this.rightLeg, limbsT, limbsHidden);
+         setVanishing(this.leftLeg, limbsT, limbsHidden);
+
+         // Head: skull tilts - ONE axis only (xRot). ModelPart composes rotation Z-then-Y-then-X
+         // around its own pivot; xRot+zRot together on the head produces a corkscrew motion instead
+         // of a hinge-like sag, because its jaw-pivoted, asymmetric face texture makes that visible
+         // in a way it never is on texture-less limb bones (RECOVERY.md rendering lesson 3).
+         this.head.xRot += 0.28F * headT;
+         boolean headHidden = effective >= DecayCurves.ASH_HIDE_HEAD_AT;
+         setVanishing(this.head, headT, headHidden);
+         this.hat.visible = this.head.visible;
+
+         // Body: sinks and caves in slightly, deforms and vanishes last of the three groups.
+         this.body.y += 0.5F * bodyT;
+         this.body.xRot += 0.15F * bodyT;
+         setVanishing(this.body, bodyT, effective >= DecayCurves.ASH_HIDE_BODY_AT);
+      }
+
+      /**
+       * Scales a part down toward (near) zero as t approaches 1, THEN flips
+       * visible to false only once fully hidden - never the other order.
+       * ModelPart.visible has no interpolation of its own (rendering lesson
+       * 2); toggling it at full scale is a hard, visible pop. Ramping scale
+       * down first means the part is already imperceptibly small by the
+       * time the boolean actually flips.
+       */
+      private static void setVanishing(ModelPart part, float t, boolean fullyHidden) {
+         float scale = Math.max(1.0F - t, 0.001F);
+         part.xScale = scale;
+         part.yScale = scale;
+         part.zScale = scale;
+         part.visible = !fullyHidden;
       }
    }
 
