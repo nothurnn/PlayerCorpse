@@ -11,8 +11,29 @@ import net.minecraft.util.Mth;
  */
 final class DecayCurves {
    private static final float BUILD_EASE_FRACTION = 0.12F;
+   private static final float ASH_STABLE_DURATION_FRACTION = 0.82F;
+   private static final float ASH_STABLE_VISIBLE_PROGRESS_FRACTION = 0.12F;
 
    private DecayCurves() {
+   }
+
+   /**
+    * Remaps raw ASH-phase progress so the first 82% of the phase's real
+    * duration only produces 12% of visible collapse, with the remaining 88%
+    * concentrated into the last 18% - reads as a long stable hold that
+    * suddenly gives way, like a sand structure, rather than a steady shrink.
+    * Deliberately a hard slope change at the 82% breakpoint, not smoothed -
+    * unlike buildAlphaCurve, an abrupt rate change here IS the intended
+    * effect, not something to avoid.
+    */
+   static float ashCollapseCurve(float rawProgress) {
+      rawProgress = Mth.clamp(rawProgress, 0.0F, 1.0F);
+      if (rawProgress <= ASH_STABLE_DURATION_FRACTION) {
+         return rawProgress / ASH_STABLE_DURATION_FRACTION * ASH_STABLE_VISIBLE_PROGRESS_FRACTION;
+      } else {
+         float t = (rawProgress - ASH_STABLE_DURATION_FRACTION) / (1.0F - ASH_STABLE_DURATION_FRACTION);
+         return ASH_STABLE_VISIBLE_PROGRESS_FRACTION + t * (1.0F - ASH_STABLE_VISIBLE_PROGRESS_FRACTION);
+      }
    }
 
    /**

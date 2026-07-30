@@ -47,6 +47,8 @@ public class PlayerCorpseRenderer extends LivingEntityRenderer<PlayerCorpseEntit
    private static final ResourceLocation SKELETON_TEXTURE = ResourceLocation.withDefaultNamespace("textures/entity/skeleton/skeleton.png");
    private static final int SHROUD_STAGE_COUNT = 9;
    private static final ResourceLocation[] SHROUD_STAGE_TEXTURES = new ResourceLocation[9];
+   private static final int ASH_STAGE_COUNT = 9;
+   private static final ResourceLocation[] ASH_STAGE_TEXTURES = new ResourceLocation[9];
    private final Set<Integer> loggedHeldItemIds = new HashSet<>();
    private final PlayerModel<PlayerCorpseEntity> wideModel = (PlayerModel<PlayerCorpseEntity>)this.model;
    private final PlayerModel<PlayerCorpseEntity> slimModel;
@@ -125,7 +127,29 @@ public class PlayerCorpseRenderer extends LivingEntityRenderer<PlayerCorpseEntit
    }
 
    public ResourceLocation getTextureLocation(PlayerCorpseEntity entity) {
+      if (entity.getDecayPhase() == DecayPhase.ASH) {
+         return ashTextureFor(entity);
+      }
+
       return isSkeletonPhase(entity) ? SKELETON_TEXTURE : resolveSkin(entity).texture();
+   }
+
+   /**
+    * Ash is composited directly onto the skeleton texture and returned as
+    * THE base texture for this tick, rather than added as a separate
+    * RenderLayer - this is what "no separate transparent layer" (RECOVERY.md
+    * section 7) means in practice: there is no additional draw call at all,
+    * only the single base draw's texture changes.
+    */
+   private static ResourceLocation ashTextureFor(PlayerCorpseEntity entity) {
+      float effective = DecayCurves.ashCollapseCurve(entity.getPhaseProgress());
+      float scaled = effective * 8.0F;
+      int stageLow = Mth.clamp((int)scaled, 0, 7);
+      int stageHigh = Mth.clamp(stageLow + 1, 0, 8);
+      float frac = Mth.clamp(scaled - stageLow, 0.0F, 1.0F);
+      return BlendedTextureCache.getOrCreate(
+         entity.getId(), "ash", ASH_STAGE_TEXTURES[stageLow], ASH_STAGE_TEXTURES[stageHigh], frac, SKELETON_TEXTURE
+      );
    }
 
    private static PlayerSkin resolveSkin(PlayerCorpseEntity entity) {
@@ -139,6 +163,7 @@ public class PlayerCorpseRenderer extends LivingEntityRenderer<PlayerCorpseEntit
    static {
       for (int i = 0; i < 9; i++) {
          SHROUD_STAGE_TEXTURES[i] = ResourceLocation.fromNamespaceAndPath("playercorpse", "textures/entity/shroud_erosion_" + i + ".png");
+         ASH_STAGE_TEXTURES[i] = ResourceLocation.fromNamespaceAndPath("playercorpse", "textures/entity/ash_" + i + ".png");
       }
    }
 
