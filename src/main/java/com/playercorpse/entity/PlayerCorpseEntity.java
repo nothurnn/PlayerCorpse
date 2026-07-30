@@ -1,0 +1,445 @@
+package com.playercorpse.entity;
+
+import com.playercorpse.PlayerCorpseConfig;
+import com.playercorpse.PlayerCorpseCorpseTracker;
+import com.playercorpse.menu.PlayerCorpseMenu;
+import com.playercorpse.registry.PlayerCorpseMenus;
+import java.util.Arrays;
+import java.util.List;
+import java.util.Optional;
+import java.util.UUID;
+import javax.annotation.Nullable;
+import net.minecraft.core.Direction.Axis;
+import net.minecraft.nbt.CompoundTag;
+import net.minecraft.network.chat.Component;
+import net.minecraft.network.syncher.EntityDataAccessor;
+import net.minecraft.network.syncher.EntityDataSerializers;
+import net.minecraft.network.syncher.SynchedEntityData;
+import net.minecraft.network.syncher.SynchedEntityData.Builder;
+import net.minecraft.server.level.ServerLevel;
+import net.minecraft.server.level.ServerPlayer;
+import net.minecraft.util.Mth;
+import net.minecraft.world.InteractionHand;
+import net.minecraft.world.InteractionResult;
+import net.minecraft.world.SimpleContainer;
+import net.minecraft.world.SimpleMenuProvider;
+import net.minecraft.world.damagesource.DamageSource;
+import net.minecraft.world.entity.Entity;
+import net.minecraft.world.entity.EntityType;
+import net.minecraft.world.entity.EquipmentSlot;
+import net.minecraft.world.entity.HumanoidArm;
+import net.minecraft.world.entity.LivingEntity;
+import net.minecraft.world.entity.Entity.RemovalReason;
+import net.minecraft.world.entity.item.ItemEntity;
+import net.minecraft.world.entity.player.Player;
+import net.minecraft.world.inventory.MenuType;
+import net.minecraft.world.item.ItemStack;
+import net.minecraft.world.level.Level;
+import net.minecraft.world.phys.AABB;
+import net.minecraft.world.phys.Vec3;
+
+public class PlayerCorpseEntity extends LivingEntity {
+   public static final int CONTAINER_SIZE = 36;
+   private static final EquipmentSlot[] EQUIPMENT_SLOT_ORDER = new EquipmentSlot[]{
+      EquipmentSlot.HEAD, EquipmentSlot.CHEST, EquipmentSlot.LEGS, EquipmentSlot.FEET, EquipmentSlot.OFFHAND
+   };
+   public static final int EQUIPMENT_SIZE = EQUIPMENT_SLOT_ORDER.length;
+   private static final EntityDataAccessor<String> DATA_OWNER_NAME = SynchedEntityData.defineId(PlayerCorpseEntity.class, EntityDataSerializers.STRING);
+   private static final EntityDataAccessor<Optional<UUID>> DATA_OWNER_UUID = SynchedEntityData.defineId(
+      PlayerCorpseEntity.class, EntityDataSerializers.OPTIONAL_UUID
+   );
+   private static final EntityDataAccessor<Float> DATA_DECAY_PROGRESS = SynchedEntityData.defineId(PlayerCorpseEntity.class, EntityDataSerializers.FLOAT);
+   private static final EntityDataAccessor<Float> DATA_SHROUD_EROSION_PROGRESS = SynchedEntityData.defineId(
+      PlayerCorpseEntity.class, EntityDataSerializers.FLOAT
+   );
+   private static final EntityDataAccessor<Byte> DATA_DEATH_CAUSE = SynchedEntityData.defineId(PlayerCorpseEntity.class, EntityDataSerializers.BYTE);
+   private static final EntityDataAccessor<ItemStack> DATA_HELD_ITEM = SynchedEntityData.defineId(PlayerCorpseEntity.class, EntityDataSerializers.ITEM_STACK);
+   private static final EntityDataAccessor<ItemStack> DATA_EQUIPMENT_HEAD = SynchedEntityData.defineId(
+      PlayerCorpseEntity.class, EntityDataSerializers.ITEM_STACK
+   );
+   private static final EntityDataAccessor<ItemStack> DATA_EQUIPMENT_CHEST = SynchedEntityData.defineId(
+      PlayerCorpseEntity.class, EntityDataSerializers.ITEM_STACK
+   );
+   private static final EntityDataAccessor<ItemStack> DATA_EQUIPMENT_LEGS = SynchedEntityData.defineId(
+      PlayerCorpseEntity.class, EntityDataSerializers.ITEM_STACK
+   );
+   private static final EntityDataAccessor<ItemStack> DATA_EQUIPMENT_FEET = SynchedEntityData.defineId(
+      PlayerCorpseEntity.class, EntityDataSerializers.ITEM_STACK
+   );
+   private static final EntityDataAccessor<ItemStack> DATA_EQUIPMENT_OFFHAND = SynchedEntityData.defineId(
+      PlayerCorpseEntity.class, EntityDataSerializers.ITEM_STACK
+   );
+   public static final float MODEL_SWAP_PROGRESS = 0.9934211F;
+   private final SimpleContainer inventory = new SimpleContainer(36);
+   private final SimpleContainer equipment = new SimpleContainer(EQUIPMENT_SIZE);
+   private long ageInTicks;
+   private long emptyTicks;
+   private long shroudErosionTicks;
+   private boolean fullyDecayedForced;
+   private boolean openedByAnyone;
+   private final int[] generalOriginalSlot = new int[36];
+   private double anchorX;
+   private double anchorY;
+   private double anchorZ;
+   private boolean anchorSet;
+   private static final double HITBOX_HALF_LENGTH = 0.9;
+   private static final double HITBOX_HALF_WIDTH = 0.3;
+   private static final double HITBOX_HEIGHT = 0.6;
+
+   public static int equipmentContainerIndex(EquipmentSlot slot) {
+      for (int i = 0; i < EQUIPMENT_SLOT_ORDER.length; i++) {
+         if (EQUIPMENT_SLOT_ORDER[i] == slot) {
+            return i;
+         }
+      }
+
+      return -1;
+   }
+
+   public static EquipmentSlot equipmentSlotAt(int index) {
+      return EQUIPMENT_SLOT_ORDER[index];
+   }
+
+   public static int generalSlotForPlayerInventorySlot(int playerInventoryIndex) {
+      if (playerInventoryIndex >= 0 && playerInventoryIndex < 9) {
+         return 27 + playerInventoryIndex;
+      } else {
+         return playerInventoryIndex >= 9 && playerInventoryIndex < 36 ? playerInventoryIndex - 9 : -1;
+      }
+   }
+
+   public PlayerCorpseEntity(EntityType<? extends PlayerCorpseEntity> type, Level level) {
+      super(type, level);
+      Arrays.fill(this.generalOriginalSlot, -1);
+      this.setNoGravity(true);
+      this.noPhysics = true;
+      this.blocksBuilding = false;
+   }
+
+   public void anchorHere() {
+      this.anchorX = this.getX();
+      this.anchorY = this.getY();
+      this.anchorZ = this.getZ();
+      this.anchorSet = true;
+   }
+
+   protected AABB makeBoundingBox() {
+      boolean longAlongX = this.getDirection().getAxis() == Axis.X;
+      double halfX = longAlongX ? 0.9 : 0.3;
+      double halfZ = longAlongX ? 0.3 : 0.9;
+      double x = this.getX();
+      double y = this.getY();
+      double z = this.getZ();
+      return new AABB(x - halfX, y, z - halfZ, x + halfX, y + 0.6, z + halfZ);
+   }
+
+   public void setYRot(float yRot) {
+      super.setYRot(yRot);
+      this.setBoundingBox(this.makeBoundingBox());
+   }
+
+   public void knockback(double strength, double x, double z) {
+   }
+
+   public boolean isPushedByFluid() {
+      return false;
+   }
+
+   public boolean isInvulnerableTo(DamageSource damageSource) {
+      return true;
+   }
+
+   public void setOwner(UUID ownerUuid, String ownerName) {
+      this.entityData.set(DATA_OWNER_UUID, Optional.of(ownerUuid));
+      this.entityData.set(DATA_OWNER_NAME, ownerName);
+      this.setCustomName(Component.literal(ownerName.isEmpty() ? "Corpse" : "Corpse of " + ownerName));
+      this.setCustomNameVisible(false);
+   }
+
+   public Optional<UUID> getOwnerUuid() {
+      return (Optional<UUID>)this.entityData.get(DATA_OWNER_UUID);
+   }
+
+   public String getOwnerName() {
+      return (String)this.entityData.get(DATA_OWNER_NAME);
+   }
+
+   public float getDecayProgress() {
+      return (Float)this.entityData.get(DATA_DECAY_PROGRESS);
+   }
+
+   public boolean isDecayed() {
+      return this.getDecayProgress() >= 1.0F;
+   }
+
+   public boolean hasBeenOpened() {
+      return this.openedByAnyone;
+   }
+
+   public float getShroudErosionProgress() {
+      return (Float)this.entityData.get(DATA_SHROUD_EROSION_PROGRESS);
+   }
+
+   public void setHeldItemForRender(ItemStack stack) {
+      this.entityData.set(DATA_HELD_ITEM, stack);
+   }
+
+   public ItemStack getHeldItemForRender() {
+      return (ItemStack)this.entityData.get(DATA_HELD_ITEM);
+   }
+
+   public void setDeathCauseCategory(DeathCauseCategory category) {
+      this.entityData.set(DATA_DEATH_CAUSE, (byte)category.ordinal());
+   }
+
+   public DeathCauseCategory getDeathCauseCategory() {
+      return DeathCauseCategory.values()[this.entityData.get(DATA_DEATH_CAUSE)];
+   }
+
+   public SimpleContainer getInventory() {
+      return this.inventory;
+   }
+
+   public SimpleContainer getEquipment() {
+      return this.equipment;
+   }
+
+   public void setGeneralOriginalSlot(int corpseSlot, int originalPlayerSlot) {
+      this.generalOriginalSlot[corpseSlot] = originalPlayerSlot;
+   }
+
+   public int[] getGeneralOriginalSlots() {
+      return this.generalOriginalSlot;
+   }
+
+   private boolean isInventoryEmpty() {
+      return this.inventory.isEmpty() && this.equipment.isEmpty();
+   }
+
+   public void tick() {
+      super.tick();
+      if (!this.getDeltaMovement().equals(Vec3.ZERO)) {
+         this.setDeltaMovement(Vec3.ZERO);
+      }
+
+      if (this.anchorSet) {
+         int minY = this.level().getMinBuildHeight();
+         if (this.anchorY < minY) {
+            this.anchorY = minY;
+         }
+
+         if (this.getX() != this.anchorX || this.getY() != this.anchorY || this.getZ() != this.anchorZ) {
+            super.setPos(this.anchorX, this.anchorY, this.anchorZ);
+         }
+      }
+
+      if (!this.level().isClientSide()) {
+         this.syncEquipmentDisplay();
+         this.ageInTicks++;
+         if (this.isInventoryEmpty()) {
+            this.emptyTicks++;
+            if (this.emptyTicks >= (Long)PlayerCorpseConfig.EMPTY_DECAY_TICKS.get()) {
+               this.fullyDecayedForced = true;
+            }
+         } else {
+            this.emptyTicks = 0L;
+         }
+
+         float ageProgress = Mth.clamp((float)this.ageInTicks / (float)((Long)PlayerCorpseConfig.DECAY_TICKS.get()).longValue(), 0.0F, 1.0F);
+         float progress = this.fullyDecayedForced ? 1.0F : ageProgress;
+         if (progress != this.getDecayProgress()) {
+            this.entityData.set(DATA_DECAY_PROGRESS, progress);
+         }
+
+         float erosionProgress;
+         if (this.fullyDecayedForced) {
+            erosionProgress = 1.0F;
+         } else if (progress >= 0.9934211F) {
+            this.shroudErosionTicks++;
+            erosionProgress = Mth.clamp((float)this.shroudErosionTicks / (float)((Long)PlayerCorpseConfig.SHROUD_EROSION_TICKS.get()).longValue(), 0.0F, 1.0F);
+         } else {
+            erosionProgress = 0.0F;
+         }
+
+         if (erosionProgress != this.getShroudErosionProgress()) {
+            this.entityData.set(DATA_SHROUD_EROSION_PROGRESS, erosionProgress);
+         }
+
+         if ((Boolean)PlayerCorpseConfig.FORCE_DESPAWN_ENABLED.get() && this.ageInTicks >= (Long)PlayerCorpseConfig.FORCE_DESPAWN_TICKS.get()) {
+            this.discard();
+         }
+      }
+   }
+
+   public void remove(RemovalReason reason) {
+      if (!this.level().isClientSide() && !this.isInventoryEmpty()) {
+         this.dropContainer(this.inventory);
+         this.dropContainer(this.equipment);
+      }
+
+      super.remove(reason);
+   }
+
+   private void dropContainer(SimpleContainer container) {
+      for (int i = 0; i < container.getContainerSize(); i++) {
+         ItemStack stack = container.getItem(i);
+         if (!stack.isEmpty()) {
+            this.level().addFreshEntity(new ItemEntity(this.level(), this.getX(), this.getY(), this.getZ(), stack));
+         }
+      }
+
+      container.clearContent();
+   }
+
+   public InteractionResult interact(Player player, InteractionHand hand) {
+      if (hand != InteractionHand.MAIN_HAND) {
+         return InteractionResult.PASS;
+      }
+
+      if (!this.level().isClientSide() && player instanceof ServerPlayer serverPlayer) {
+         if (!this.openedByAnyone) {
+            this.openedByAnyone = true;
+            if (this.level() instanceof ServerLevel serverLevel) {
+               PlayerCorpseCorpseTracker.onCorpseOpened(serverLevel, this);
+            }
+         }
+
+         Component title = (Component)(this.getCustomName() != null ? this.getCustomName() : Component.literal("Corpse"));
+         serverPlayer.openMenu(
+            new SimpleMenuProvider(
+               (containerId, playerInventory, p) -> new PlayerCorpseMenu(
+                  (MenuType<?>)PlayerCorpseMenus.CORPSE_MENU.get(), containerId, playerInventory, this.equipment, this.inventory, this.generalOriginalSlot
+               ),
+               title
+            )
+         );
+      }
+
+      return InteractionResult.sidedSuccess(this.level().isClientSide());
+   }
+
+   public boolean isPickable() {
+      return true;
+   }
+
+   public boolean isPushable() {
+      return false;
+   }
+
+   protected void doPush(Entity entity) {
+   }
+
+   public Iterable<ItemStack> getArmorSlots() {
+      return List.of(
+         this.getItemBySlot(EquipmentSlot.FEET),
+         this.getItemBySlot(EquipmentSlot.LEGS),
+         this.getItemBySlot(EquipmentSlot.CHEST),
+         this.getItemBySlot(EquipmentSlot.HEAD)
+      );
+   }
+
+   public ItemStack getItemBySlot(EquipmentSlot slot) {
+      if (slot == EquipmentSlot.MAINHAND) {
+         return this.getHeldItemForRender();
+      }
+
+      EntityDataAccessor<ItemStack> accessor = syncedEquipmentAccessor(slot);
+      return accessor != null ? (ItemStack)this.entityData.get(accessor) : ItemStack.EMPTY;
+   }
+
+   @Nullable
+   private static EntityDataAccessor<ItemStack> syncedEquipmentAccessor(EquipmentSlot slot) {
+      return switch (slot) {
+         case HEAD -> DATA_EQUIPMENT_HEAD;
+         case CHEST -> DATA_EQUIPMENT_CHEST;
+         case LEGS -> DATA_EQUIPMENT_LEGS;
+         case FEET -> DATA_EQUIPMENT_FEET;
+         case OFFHAND -> DATA_EQUIPMENT_OFFHAND;
+         default -> null;
+      };
+   }
+
+   private void syncEquipmentDisplay() {
+      for (int i = 0; i < EQUIPMENT_SIZE; i++) {
+         EntityDataAccessor<ItemStack> accessor = syncedEquipmentAccessor(EQUIPMENT_SLOT_ORDER[i]);
+         ItemStack current = this.equipment.getItem(i);
+         if (!ItemStack.matches(current, (ItemStack)this.entityData.get(accessor))) {
+            this.entityData.set(accessor, current.copy());
+         }
+      }
+   }
+
+   public void setItemSlot(EquipmentSlot slot, ItemStack stack) {
+   }
+
+   public HumanoidArm getMainArm() {
+      return HumanoidArm.RIGHT;
+   }
+
+   protected void defineSynchedData(Builder builder) {
+      super.defineSynchedData(builder);
+      builder.define(DATA_OWNER_NAME, "");
+      builder.define(DATA_OWNER_UUID, Optional.empty());
+      builder.define(DATA_DECAY_PROGRESS, 0.0F);
+      builder.define(DATA_SHROUD_EROSION_PROGRESS, 0.0F);
+      builder.define(DATA_DEATH_CAUSE, (byte)DeathCauseCategory.OTHER.ordinal());
+      builder.define(DATA_HELD_ITEM, ItemStack.EMPTY);
+      builder.define(DATA_EQUIPMENT_HEAD, ItemStack.EMPTY);
+      builder.define(DATA_EQUIPMENT_CHEST, ItemStack.EMPTY);
+      builder.define(DATA_EQUIPMENT_LEGS, ItemStack.EMPTY);
+      builder.define(DATA_EQUIPMENT_FEET, ItemStack.EMPTY);
+      builder.define(DATA_EQUIPMENT_OFFHAND, ItemStack.EMPTY);
+   }
+
+   public void addAdditionalSaveData(CompoundTag compound) {
+      compound.put("Items", this.inventory.createTag(this.registryAccess()));
+      compound.put("Equipment", this.equipment.createTag(this.registryAccess()));
+      compound.putString("OwnerName", this.getOwnerName());
+      this.getOwnerUuid().ifPresent(uuid -> compound.putUUID("OwnerUUID", uuid));
+      compound.putFloat("DecayProgress", this.getDecayProgress());
+      compound.putFloat("ShroudErosionProgress", this.getShroudErosionProgress());
+      compound.putBoolean("FullyDecayedForced", this.fullyDecayedForced);
+      compound.putBoolean("OpenedByAnyone", this.openedByAnyone);
+      compound.putLong("AgeInTicks", this.ageInTicks);
+      compound.putLong("EmptyTicks", this.emptyTicks);
+      compound.putLong("ShroudErosionTicks", this.shroudErosionTicks);
+      compound.putIntArray("GeneralOriginalSlots", this.generalOriginalSlot);
+      compound.putByte("DeathCause", (byte)this.getDeathCauseCategory().ordinal());
+      if (!this.getHeldItemForRender().isEmpty()) {
+         compound.put("HeldItemForRender", this.getHeldItemForRender().save(this.registryAccess()));
+      }
+   }
+
+   public void readAdditionalSaveData(CompoundTag compound) {
+      this.inventory.fromTag(compound.getList("Items", 10), this.registryAccess());
+      if (compound.contains("Equipment")) {
+         this.equipment.fromTag(compound.getList("Equipment", 10), this.registryAccess());
+      }
+
+      this.entityData.set(DATA_OWNER_NAME, compound.getString("OwnerName"));
+      if (compound.hasUUID("OwnerUUID")) {
+         this.entityData.set(DATA_OWNER_UUID, Optional.of(compound.getUUID("OwnerUUID")));
+      }
+
+      this.entityData.set(DATA_DECAY_PROGRESS, compound.getFloat("DecayProgress"));
+      this.entityData.set(DATA_SHROUD_EROSION_PROGRESS, compound.getFloat("ShroudErosionProgress"));
+      this.fullyDecayedForced = compound.getBoolean("FullyDecayedForced");
+      this.openedByAnyone = compound.getBoolean("OpenedByAnyone");
+      this.ageInTicks = compound.getLong("AgeInTicks");
+      this.emptyTicks = compound.getLong("EmptyTicks");
+      this.shroudErosionTicks = compound.getLong("ShroudErosionTicks");
+      int[] savedOriginalSlots = compound.getIntArray("GeneralOriginalSlots");
+      if (savedOriginalSlots.length == 36) {
+         System.arraycopy(savedOriginalSlots, 0, this.generalOriginalSlot, 0, 36);
+      }
+
+      int deathCauseOrdinal = compound.getByte("DeathCause") & 255;
+      if (deathCauseOrdinal < DeathCauseCategory.values().length) {
+         this.entityData.set(DATA_DEATH_CAUSE, (byte)deathCauseOrdinal);
+      }
+
+      if (compound.contains("HeldItemForRender")) {
+         this.entityData.set(DATA_HELD_ITEM, ItemStack.parseOptional(this.registryAccess(), compound.getCompound("HeldItemForRender")));
+      }
+   }
+}

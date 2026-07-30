@@ -1,0 +1,187 @@
+package com.playercorpse;
+
+import com.playercorpse.client.PlayerCorpseClientEvents;
+import com.playercorpse.client.PlayerCorpseHudArrow;
+import com.playercorpse.entity.PlayerCorpseEntity;
+import com.playercorpse.history.DeathHistoryEntry;
+import com.playercorpse.history.PlayerCorpseDeathHistoryData;
+import com.playercorpse.menu.PlayerCorpseMenu;
+import com.playercorpse.registry.PlayerCorpseMenus;
+import java.util.ArrayList;
+import java.util.List;
+import net.minecraft.network.RegistryFriendlyByteBuf;
+import net.minecraft.network.codec.ByteBufCodecs;
+import net.minecraft.network.codec.StreamCodec;
+import net.minecraft.network.protocol.common.custom.CustomPacketPayload;
+import net.minecraft.network.protocol.common.custom.CustomPacketPayload.Type;
+import net.minecraft.resources.ResourceLocation;
+import net.minecraft.server.level.ServerPlayer;
+import net.minecraft.world.Container;
+import net.minecraft.world.entity.EquipmentSlot;
+import net.minecraft.world.item.ItemStack;
+import net.neoforged.bus.api.SubscribeEvent;
+import net.neoforged.fml.common.EventBusSubscriber;
+import net.neoforged.fml.common.EventBusSubscriber.Bus;
+import net.neoforged.neoforge.network.PacketDistributor;
+import net.neoforged.neoforge.network.event.RegisterPayloadHandlersEvent;
+import net.neoforged.neoforge.network.handling.IPayloadContext;
+import net.neoforged.neoforge.network.registration.PayloadRegistrar;
+
+@EventBusSubscriber(modid = "playercorpse", bus = Bus.MOD)
+public final class PlayerCorpseNetworking {
+   private PlayerCorpseNetworking() {
+   }
+
+   @SubscribeEvent
+   public static void onRegisterPayloadHandlers(RegisterPayloadHandlersEvent event) {
+      PayloadRegistrar registrar = event.registrar("1");
+      registrar.playToServer(
+         PlayerCorpseNetworking.TransferItemsPayload.TYPE,
+         PlayerCorpseNetworking.TransferItemsPayload.STREAM_CODEC,
+         PlayerCorpseNetworking::handleTransferItems
+      );
+      registrar.playToServer(
+         PlayerCorpseNetworking.RequestDeathHistoryPayload.TYPE,
+         PlayerCorpseNetworking.RequestDeathHistoryPayload.STREAM_CODEC,
+         PlayerCorpseNetworking::handleRequestDeathHistory
+      );
+      registrar.playToClient(
+         PlayerCorpseNetworking.DeathHistorySyncPayload.TYPE,
+         PlayerCorpseNetworking.DeathHistorySyncPayload.STREAM_CODEC,
+         (payload, context) -> PlayerCorpseClientEvents.handleDeathHistorySync(payload)
+      );
+      registrar.playToClient(
+         PlayerCorpseNetworking.CorpseTrackerSyncPayload.TYPE,
+         PlayerCorpseNetworking.CorpseTrackerSyncPayload.STREAM_CODEC,
+         (payload, context) -> PlayerCorpseHudArrow.handleCorpseTrackerSync(payload)
+      );
+   }
+
+   private static void handleRequestDeathHistory(PlayerCorpseNetworking.RequestDeathHistoryPayload payload, IPayloadContext context) {
+      if (context.player() instanceof ServerPlayer serverPlayer) {
+         List var4 = PlayerCorpseDeathHistoryData.get(serverPlayer.serverLevel()).getEntries(serverPlayer.getUUID());
+         PacketDistributor.sendToPlayer(serverPlayer, new PlayerCorpseNetworking.DeathHistorySyncPayload(var4), new CustomPacketPayload[0]);
+      }
+   }
+
+   private static void handleTransferItems(PlayerCorpseNetworking.TransferItemsPayload payload, IPayloadContext context) {
+      if (context.player() instanceof ServerPlayer serverPlayer) {
+         if (serverPlayer.containerMenu.getType() == PlayerCorpseMenus.CORPSE_MENU.get() && serverPlayer.containerMenu instanceof PlayerCorpseMenu corpseMenu) {
+            autoEquip(serverPlayer, corpseMenu.getEquipmentContainer());
+            transferAllInto(serverPlayer, corpseMenu.getEquipmentContainer());
+            restoreToOriginalSlots(serverPlayer, corpseMenu.getGeneralContainer(), corpseMenu.getGeneralOriginalSlots());
+            transferAllInto(serverPlayer, corpseMenu.getGeneralContainer());
+         }
+      }
+   }
+
+   private static void autoEquip(ServerPlayer serverPlayer, Container equipmentContainer) {
+      for (int i = 0; i < PlayerCorpseEntity.EQUIPMENT_SIZE; i++) {
+         ItemStack stack = equipmentContainer.getItem(i);
+         if (!stack.isEmpty()) {
+            EquipmentSlot equipmentSlot = PlayerCorpseEntity.equipmentSlotAt(i);
+            if (serverPlayer.getItemBySlot(equipmentSlot).isEmpty()) {
+               serverPlayer.setItemSlot(equipmentSlot, stack);
+               equipmentContainer.setItem(i, ItemStack.EMPTY);
+            }
+         }
+      }
+
+      equipmentContainer.setChanged();
+   }
+
+   private static void restoreToOriginalSlots(ServerPlayer serverPlayer, Container generalContainer, int[] originalSlots) {
+      if (originalSlots != null) {
+         for (int corpseSlot = 0; corpseSlot < generalContainer.getContainerSize(); corpseSlot++) {
+            ItemStack stack = generalContainer.getItem(corpseSlot);
+            if (!stack.isEmpty()) {
+               int originalSlot = originalSlots[corpseSlot];
+               if (originalSlot >= 0 && serverPlayer.getInventory().getItem(originalSlot).isEmpty()) {
+                  serverPlayer.getInventory().setItem(originalSlot, stack);
+                  generalContainer.setItem(corpseSlot, ItemStack.EMPTY);
+               }
+            }
+         }
+
+         generalContainer.setChanged();
+      }
+   }
+
+   private static void transferAllInto(ServerPlayer serverPlayer, Container container) {
+      for (int slot = 0; slot < container.getContainerSize(); slot++) {
+         ItemStack stack = container.getItem(slot);
+         if (!stack.isEmpty()) {
+            serverPlayer.getInventory().add(stack);
+            if (stack.isEmpty()) {
+               container.setItem(slot, ItemStack.EMPTY);
+            }
+         }
+      }
+
+      container.setChanged();
+   }
+
+   public record CorpseTrackerSyncPayload(boolean active, String dimensionId, double x, double y, double z) implements CustomPacketPayload {
+      public static final Type<PlayerCorpseNetworking.CorpseTrackerSyncPayload> TYPE = new Type(
+         ResourceLocation.fromNamespaceAndPath("playercorpse", "corpse_tracker_sync")
+      );
+      public static final StreamCodec<RegistryFriendlyByteBuf, PlayerCorpseNetworking.CorpseTrackerSyncPayload> STREAM_CODEC = StreamCodec.composite(
+         ByteBufCodecs.BOOL,
+         PlayerCorpseNetworking.CorpseTrackerSyncPayload::active,
+         ByteBufCodecs.STRING_UTF8,
+         PlayerCorpseNetworking.CorpseTrackerSyncPayload::dimensionId,
+         ByteBufCodecs.DOUBLE,
+         PlayerCorpseNetworking.CorpseTrackerSyncPayload::x,
+         ByteBufCodecs.DOUBLE,
+         PlayerCorpseNetworking.CorpseTrackerSyncPayload::y,
+         ByteBufCodecs.DOUBLE,
+         PlayerCorpseNetworking.CorpseTrackerSyncPayload::z,
+         PlayerCorpseNetworking.CorpseTrackerSyncPayload::new
+      );
+
+      public Type<PlayerCorpseNetworking.CorpseTrackerSyncPayload> type() {
+         return TYPE;
+      }
+   }
+
+   public record DeathHistorySyncPayload(List<DeathHistoryEntry> entries) implements CustomPacketPayload {
+      public static final Type<PlayerCorpseNetworking.DeathHistorySyncPayload> TYPE = new Type(
+         ResourceLocation.fromNamespaceAndPath("playercorpse", "death_history_sync")
+      );
+      public static final StreamCodec<RegistryFriendlyByteBuf, PlayerCorpseNetworking.DeathHistorySyncPayload> STREAM_CODEC = StreamCodec.composite(
+         ByteBufCodecs.collection(ArrayList::new, DeathHistoryEntry.STREAM_CODEC),
+         PlayerCorpseNetworking.DeathHistorySyncPayload::entries,
+         PlayerCorpseNetworking.DeathHistorySyncPayload::new
+      );
+
+      public Type<PlayerCorpseNetworking.DeathHistorySyncPayload> type() {
+         return TYPE;
+      }
+   }
+
+   public record RequestDeathHistoryPayload() implements CustomPacketPayload {
+      public static final Type<PlayerCorpseNetworking.RequestDeathHistoryPayload> TYPE = new Type(
+         ResourceLocation.fromNamespaceAndPath("playercorpse", "request_death_history")
+      );
+      public static final StreamCodec<RegistryFriendlyByteBuf, PlayerCorpseNetworking.RequestDeathHistoryPayload> STREAM_CODEC = StreamCodec.unit(
+         new PlayerCorpseNetworking.RequestDeathHistoryPayload()
+      );
+
+      public Type<PlayerCorpseNetworking.RequestDeathHistoryPayload> type() {
+         return TYPE;
+      }
+   }
+
+   public record TransferItemsPayload() implements CustomPacketPayload {
+      public static final Type<PlayerCorpseNetworking.TransferItemsPayload> TYPE = new Type(
+         ResourceLocation.fromNamespaceAndPath("playercorpse", "transfer_items")
+      );
+      public static final StreamCodec<RegistryFriendlyByteBuf, PlayerCorpseNetworking.TransferItemsPayload> STREAM_CODEC = StreamCodec.unit(
+         new PlayerCorpseNetworking.TransferItemsPayload()
+      );
+
+      public Type<PlayerCorpseNetworking.TransferItemsPayload> type() {
+         return TYPE;
+      }
+   }
+}
