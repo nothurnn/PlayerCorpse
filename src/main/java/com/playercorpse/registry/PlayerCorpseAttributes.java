@@ -15,5 +15,8 @@ public final class PlayerCorpseAttributes {
    @SubscribeEvent
    public static void onEntityAttributeCreation(EntityAttributeCreationEvent event) {
       event.put((EntityType)PlayerCorpseEntities.PLAYER_CORPSE.get(), LivingEntity.createLivingAttributes().build());
+      // Easy to miss, doesn't show up at compile time (RECOVERY.md section 7): any LivingEntity
+      // subtype needs its own attribute registration here or it NPEs at construction.
+      event.put((EntityType)PlayerCorpseEntities.GRAVE_MARKER.get(), LivingEntity.createLivingAttributes().build());
    }
 }

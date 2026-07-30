@@ -3,6 +3,7 @@ package com.playercorpse.entity;
 import com.playercorpse.PlayerCorpseConfig;
 import com.playercorpse.PlayerCorpseCorpseTracker;
 import com.playercorpse.menu.PlayerCorpseMenu;
+import com.playercorpse.registry.PlayerCorpseEntities;
 import com.playercorpse.registry.PlayerCorpseMenus;
 import java.util.Arrays;
 import java.util.List;
@@ -299,13 +300,22 @@ public class PlayerCorpseEntity extends LivingEntity {
    }
 
    /**
-    * Ash phase complete, discard. TODO (RECOVERY.md section 7 / Part B item
-    * 5, landing in a later step this session): spawn a PlayerGraveMarkerEntity
-    * transferring both containers first, but only if anything remains - for
-    * now this matches the pre-existing remove()'s ground-drop fallback below,
-    * no items are silently lost, they just don't get a grave marker yet.
+    * Ash phase complete: spawn a grave marker transferring both containers
+    * if anything remains (RECOVERY.md section 7 - "nur wenn noch Loot drin
+    * ist"), then discard. If the corpse is already empty, nothing is
+    * spawned and discard() below simply removes it - remove()'s own
+    * ground-drop fallback is a no-op too, since there's nothing left in
+    * either container.
     */
    private void completeAshAndDiscard() {
+      if (!this.isInventoryEmpty() && this.level() instanceof ServerLevel serverLevel) {
+         PlayerGraveMarkerEntity marker = new PlayerGraveMarkerEntity(PlayerCorpseEntities.GRAVE_MARKER.get(), serverLevel);
+         marker.setPos(this.getX(), this.getY(), this.getZ());
+         marker.setYRot(this.getYRot());
+         marker.transferFrom(this.inventory, this.equipment, this.generalOriginalSlot);
+         serverLevel.addFreshEntity(marker);
+      }
+
       this.discard();
    }
 
