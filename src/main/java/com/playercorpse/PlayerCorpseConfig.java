@@ -10,44 +10,73 @@ public final class PlayerCorpseConfig {
    private static final Builder BUILDER = new Builder();
    public static final BooleanValue ENABLED = BUILDER.comment("Master switch. If false, deaths behave exactly as vanilla (normal item drops, no corpse).")
       .define("enabled", true);
-   public static final LongValue DECAY_TICKS = BUILDER.comment(
+   public static final LongValue HOLD_FRESH_TICKS = BUILDER.comment(
          new String[]{
-            "Ticks after a corpse spawns for the white shroud to build up (see PlayerCorpseRenderer's",
-            "CorpseShroudLayer.BUILD_END) plus a brief hold at full opacity, during which the model",
-            "reference silently switches from the player's skin to the real skeleton underneath,",
-            "hidden by the fully opaque shroud. Purely cosmetic - stored items remain fully",
-            "retrievable regardless of this. Default of 3600 is exactly 3 real-world minutes. See",
-            "shroud_erosion_ticks below - together the two total 4.5 real-world minutes",
-            "death-to-fully-revealed-skeleton (build phase is intentionally longer than reveal).",
+            "Ticks a fresh corpse holds its normal player-skin appearance before the shroud begins",
+            "forming (see decay_ticks below). Default of 2400 is 2 real-world minutes.",
             "NOTE: if you're testing this value and the observed timing doesn't match, check",
             "whether the vanilla /tick rate command has been used to change the server's tick",
             "speed away from the default 20/sec - that affects every tick-based timer in the game",
             "equally, this mod's included, and isn't something this config can compensate for."
          }
       )
-      .defineInRange("decay_ticks", 3600L, 1L, Long.MAX_VALUE);
-   public static final LongValue SHROUD_EROSION_TICKS = BUILDER.comment(
+      .defineInRange("hold_fresh_ticks", 2400L, 1L, Long.MAX_VALUE);
+   public static final LongValue DECAY_TICKS = BUILDER.comment(
          new String[]{
-            "Ticks the shroud takes to wear away, once it starts eroding (after the model has",
-            "already silently swapped to the skeleton underneath - see decay_ticks above). The",
-            "shroud keeps its player-shaped silhouette throughout this, gradually developing more",
-            "and unevenly-placed holes (not a uniform fade) until it's fully gone and only the",
-            "skeleton remains. Runs immediately after decay_ticks' brief hold, so the two together",
-            "read as one continuous, gradual change rather than a change-then-pause-then-change.",
-            "Default of 1800 is 1.5 real-world minutes; combined with decay_ticks' 3 minutes that's",
-            "4.5 minutes total death-to-fully-revealed-skeleton (build phase is intentionally left",
-            "longer than the reveal phase)."
+            "Ticks for the white shroud to build up over the corpse once hold_fresh_ticks elapses.",
+            "The model reference silently switches from the player's skin to the real skeleton",
+            "underneath partway through this window, hidden by the shroud - see",
+            "PlayerCorpseRenderer's BUILD-phase rendering. Purely cosmetic; stored items remain",
+            "fully retrievable throughout. Default of 2400 is 2 real-world minutes."
          }
       )
-      .defineInRange("shroud_erosion_ticks", 1800L, 1L, Long.MAX_VALUE);
+      .defineInRange("decay_ticks", 2400L, 1L, Long.MAX_VALUE);
+   public static final LongValue HOLD_FULL_SHROUD_TICKS = BUILDER.comment(
+         new String[]{
+            "Ticks the shroud holds at full, unbroken opacity once fully built, before erosion",
+            "begins (see shroud_erosion_ticks below). The model swap to skeleton is already done",
+            "and hidden by this point, so this window can absorb any residual visual settling",
+            "without ever showing a seam. Default of 1800 is 1.5 real-world minutes."
+         }
+      )
+      .defineInRange("hold_full_shroud_ticks", 1800L, 1L, Long.MAX_VALUE);
+   public static final LongValue SHROUD_EROSION_TICKS = BUILDER.comment(
+         new String[]{
+            "Ticks the shroud takes to wear away once hold_full_shroud_ticks elapses. The shroud",
+            "keeps its player-shaped silhouette throughout this, gradually developing more and",
+            "unevenly-placed holes (not a uniform fade) until it's fully gone and only the skeleton",
+            "remains. Default of 2400 is 2 real-world minutes."
+         }
+      )
+      .defineInRange("shroud_erosion_ticks", 2400L, 1L, Long.MAX_VALUE);
+   public static final LongValue HOLD_FULL_SKELETON_TICKS = BUILDER.comment(
+         new String[]{
+            "Ticks the bare skeleton holds once the shroud is fully eroded, before ash decay begins",
+            "(see ash_ticks below). Default of 1800 is 1.5 real-world minutes."
+         }
+      )
+      .defineInRange("hold_full_skeleton_ticks", 1800L, 1L, Long.MAX_VALUE);
+   public static final LongValue ASH_TICKS = BUILDER.comment(
+         new String[]{
+            "Ticks for the bare skeleton to crumble to ash and the corpse to be removed. If any",
+            "items remain at that point, a PlayerGraveMarkerEntity is left behind holding them -",
+            "see RECOVERY.md section 7. Time is concentrated at the end (see ashCollapseCurve in",
+            "the renderer) so it reads as a long stable hold that suddenly collapses, not a steady",
+            "shrink. Default of 1800 is 1.5 real-world minutes.",
+            "Total default time from fresh corpse to ash (sum of all six phases) is 12,600 ticks",
+            "= 10.5 real-world minutes."
+         }
+      )
+      .defineInRange("ash_ticks", 1800L, 1L, Long.MAX_VALUE);
    public static final LongValue EMPTY_DECAY_TICKS = BUILDER.comment(
          new String[]{
             "Ticks a corpse waits, once BOTH its equipment and general inventory are completely",
-            "empty, before it transitions to the skeleton-style decayed appearance (same visual",
-            "flag as decay_ticks above - if it's already decayed by then, nothing further happens).",
-            "This never removes the corpse; an empty corpse just sits there, decayed, forever unless",
-            "force_despawn_enabled is separately turned on. Never counts down while any item",
-            "remains. Default of 1200 is 1 real-world minute."
+            "empty, before it fast-forwards straight to the HOLD_FULL_SKELETON phase (skipping the",
+            "early cosmetic HOLD_FRESH/BUILD/HOLD_FULL_SHROUD/EROSION phases, since there's no loot",
+            "left to protect by lingering in them). From there it decays and despawns exactly like",
+            "any other corpse - since it's empty, no grave marker is left behind when it finally",
+            "reaches ash. Never counts down while any item remains. Default of 1200 is 1 real-world",
+            "minute."
          }
       )
       .defineInRange("empty_decay_ticks", 1200L, 1L, Long.MAX_VALUE);
@@ -55,8 +84,11 @@ public final class PlayerCorpseConfig {
          new String[]{
             "Safety net only, OFF by default: if enabled, a corpse still holding items after",
             "force_despawn_ticks have passed since it spawned is removed anyway (its items are",
-            "dropped on the ground, never deleted - see PlayerCorpseEntity#remove). Intended only",
-            "for servers that want a hard ceiling on how long an abandoned corpse can persist."
+            "dropped on the ground, never deleted - see PlayerCorpseEntity#remove). Unlike reaching",
+            "ash naturally, this does NOT spawn a grave marker - it's a last-resort ceiling for",
+            "servers that want a hard cap on abandoned corpses, not part of the normal decay story.",
+            "Intended only for servers that want a hard ceiling on how long an abandoned corpse can",
+            "persist."
          }
       )
       .define("force_despawn_enabled", false);

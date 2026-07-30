@@ -7,6 +7,7 @@ import com.mojang.blaze3d.vertex.VertexConsumer;
 import com.mojang.logging.LogUtils;
 import com.mojang.math.Axis;
 import com.playercorpse.client.PlayerCorpseSkinResolver;
+import com.playercorpse.entity.DecayPhase;
 import com.playercorpse.entity.PlayerCorpseEntity;
 import java.io.IOException;
 import java.io.InputStream;
@@ -46,8 +47,6 @@ public class PlayerCorpseRenderer extends LivingEntityRenderer<PlayerCorpseEntit
    private static final ResourceLocation SKELETON_TEXTURE = ResourceLocation.withDefaultNamespace("textures/entity/skeleton/skeleton.png");
    private static final int SHROUD_STAGE_COUNT = 9;
    private static final ResourceLocation[] SHROUD_STAGE_TEXTURES = new ResourceLocation[9];
-   private static final float BUILD_END = 0.9868421F;
-   private static final float HOLD_END = 1.0F;
    private final Set<Integer> loggedHeldItemIds = new HashSet<>();
    private final PlayerModel<PlayerCorpseEntity> wideModel = (PlayerModel<PlayerCorpseEntity>)this.model;
    private final PlayerModel<PlayerCorpseEntity> slimModel;
@@ -83,11 +82,11 @@ public class PlayerCorpseRenderer extends LivingEntityRenderer<PlayerCorpseEntit
    }
 
    private static boolean isSkeletonPhase(PlayerCorpseEntity entity) {
-      return entity.getDecayProgress() >= 0.9934211F;
+      return entity.getDecayPhase().ordinal() >= DecayPhase.HOLD_FULL_SHROUD.ordinal();
    }
 
    private static boolean isShroudActive(PlayerCorpseEntity entity) {
-      return entity.getDecayProgress() < 1.0F || entity.getShroudErosionProgress() < 1.0F;
+      return entity.getDecayPhase().ordinal() < DecayPhase.HOLD_FULL_SKELETON.ordinal();
    }
 
    private static PlayerModel<PlayerCorpseEntity> choosePlayerModel(
@@ -211,38 +210,28 @@ public class PlayerCorpseRenderer extends LivingEntityRenderer<PlayerCorpseEntit
          float netHeadYaw,
          float headPitch
       ) {
-         float decay = entity.getDecayProgress();
-         if (!(decay <= 0.0F)) {
+         DecayPhase phase = entity.getDecayPhase();
+         if (phase != DecayPhase.HOLD_FRESH && phase.ordinal() < DecayPhase.HOLD_FULL_SKELETON.ordinal()) {
             int entityId = entity.getId();
             int tickCount = entity.tickCount;
             if (this.loggedSpawnIds.add(entityId)) {
                PlayerCorpseRenderer.LOGGER
-                  .info(
-                     "[PlayerCorpse-DEBUG] corpse {} shroud first visible at client tickCount={} ({}s), decay={}",
-                     new Object[]{entityId, tickCount, tickCount / 20.0F, decay}
-                  );
+                  .info("[PlayerCorpse-DEBUG] corpse {} shroud first visible at client tickCount={} ({}s)", entityId, tickCount, tickCount / 20.0F);
             }
 
             PlayerModel<PlayerCorpseEntity> playerModel = PlayerCorpseRenderer.choosePlayerModel(entity, this.wideModel, this.slimModel);
             playerModel.setupAnim(entity, limbSwing, limbSwingAmount, ageInTicks, netHeadYaw, headPitch);
-            if (decay >= 0.9934211F && this.loggedModelSwapIds.add(entityId)) {
+            if (phase.ordinal() >= DecayPhase.HOLD_FULL_SHROUD.ordinal() && this.loggedModelSwapIds.add(entityId)) {
                PlayerCorpseRenderer.LOGGER
-                  .info(
-                     "[PlayerCorpse-DEBUG] corpse {} base model swapped to skeleton at client tickCount={} ({}s)",
-                     new Object[]{entityId, tickCount, tickCount / 20.0F}
-                  );
+                  .info("[PlayerCorpse-DEBUG] corpse {} base model swapped to skeleton at client tickCount={} ({}s)", entityId, tickCount, tickCount / 20.0F);
             }
 
             boolean hatWasVisible = playerModel.hat.visible;
             playerModel.hat.visible = false;
 
             try {
-               if (!(decay < 1.0F)) {
-                  float erosion = entity.getShroudErosionProgress();
-                  if (erosion >= 1.0F) {
-                     return;
-                  }
-
+               if (phase == DecayPhase.EROSION) {
+                  float erosion = entity.getPhaseProgress();
                   int stage = Mth.clamp(Math.round(erosion * 8.0F), 0, 8);
                   Integer lastStage = this.lastLoggedStageByEntityId.get(entityId);
                   if (lastStage == null || lastStage != stage) {
@@ -261,12 +250,11 @@ public class PlayerCorpseRenderer extends LivingEntityRenderer<PlayerCorpseEntit
                   return;
                }
 
-               float alpha = decay < 0.9868421F ? decay / 0.9868421F : 1.0F;
-               if (decay >= 0.9868421F && this.loggedBuildEndIds.add(entityId)) {
+               float alpha = phase == DecayPhase.BUILD ? entity.getPhaseProgress() : 1.0F;
+               if (phase.ordinal() > DecayPhase.BUILD.ordinal() && this.loggedBuildEndIds.add(entityId)) {
                   PlayerCorpseRenderer.LOGGER
                      .info(
-                        "[PlayerCorpse-DEBUG] corpse {} shroud fully built (build->hold) at client tickCount={} ({}s)",
-                        new Object[]{entityId, tickCount, tickCount / 20.0F}
+                        "[PlayerCorpse-DEBUG] corpse {} shroud fully built (build->hold) at client tickCount={} ({}s)", entityId, tickCount, tickCount / 20.0F
                      );
                }
 

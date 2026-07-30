@@ -48,10 +48,8 @@ public class PlayerCorpseEntity extends LivingEntity {
    private static final EntityDataAccessor<Optional<UUID>> DATA_OWNER_UUID = SynchedEntityData.defineId(
       PlayerCorpseEntity.class, EntityDataSerializers.OPTIONAL_UUID
    );
-   private static final EntityDataAccessor<Float> DATA_DECAY_PROGRESS = SynchedEntityData.defineId(PlayerCorpseEntity.class, EntityDataSerializers.FLOAT);
-   private static final EntityDataAccessor<Float> DATA_SHROUD_EROSION_PROGRESS = SynchedEntityData.defineId(
-      PlayerCorpseEntity.class, EntityDataSerializers.FLOAT
-   );
+   private static final EntityDataAccessor<Byte> DATA_DECAY_PHASE = SynchedEntityData.defineId(PlayerCorpseEntity.class, EntityDataSerializers.BYTE);
+   private static final EntityDataAccessor<Float> DATA_PHASE_PROGRESS = SynchedEntityData.defineId(PlayerCorpseEntity.class, EntityDataSerializers.FLOAT);
    private static final EntityDataAccessor<Byte> DATA_DEATH_CAUSE = SynchedEntityData.defineId(PlayerCorpseEntity.class, EntityDataSerializers.BYTE);
    private static final EntityDataAccessor<ItemStack> DATA_HELD_ITEM = SynchedEntityData.defineId(PlayerCorpseEntity.class, EntityDataSerializers.ITEM_STACK);
    private static final EntityDataAccessor<ItemStack> DATA_EQUIPMENT_HEAD = SynchedEntityData.defineId(
@@ -69,13 +67,12 @@ public class PlayerCorpseEntity extends LivingEntity {
    private static final EntityDataAccessor<ItemStack> DATA_EQUIPMENT_OFFHAND = SynchedEntityData.defineId(
       PlayerCorpseEntity.class, EntityDataSerializers.ITEM_STACK
    );
-   public static final float MODEL_SWAP_PROGRESS = 0.9934211F;
    private final SimpleContainer inventory = new SimpleContainer(36);
    private final SimpleContainer equipment = new SimpleContainer(EQUIPMENT_SIZE);
+   private DecayPhase phase = DecayPhase.HOLD_FRESH;
+   private long phaseTicks;
    private long ageInTicks;
    private long emptyTicks;
-   private long shroudErosionTicks;
-   private boolean fullyDecayedForced;
    private boolean openedByAnyone;
    private final int[] generalOriginalSlot = new int[36];
    private double anchorX;
@@ -164,20 +161,41 @@ public class PlayerCorpseEntity extends LivingEntity {
       return (String)this.entityData.get(DATA_OWNER_NAME);
    }
 
-   public float getDecayProgress() {
-      return (Float)this.entityData.get(DATA_DECAY_PROGRESS);
+   public DecayPhase getDecayPhase() {
+      byte ordinal = (Byte)this.entityData.get(DATA_DECAY_PHASE);
+      return DecayPhase.values()[ordinal];
    }
 
+   /**
+    * Progress (0-1) within the current phase only - resets to 0 on every
+    * phase transition, does not represent overall corpse lifetime.
+    */
+   public float getPhaseProgress() {
+      return (Float)this.entityData.get(DATA_PHASE_PROGRESS);
+   }
+
+   private void setPhase(DecayPhase newPhase) {
+      this.entityData.set(DATA_DECAY_PHASE, (byte)newPhase.ordinal());
+      this.phase = newPhase;
+      this.phaseTicks = 0L;
+      this.entityData.set(DATA_PHASE_PROGRESS, 0.0F);
+   }
+
+   /**
+    * Roughly equivalent to the old single-scalar system's "decay progress
+    * reached 1.0" moment (right as the shroud finished building) - kept as a
+    * named check since PlayerCorpseCorpseTracker's HUD-arrow sync still gates
+    * on it. Deliberately preserves the known, accepted gap from RECOVERY.md
+    * section 7: the arrow stops tracking once the shroud is fully built,
+    * long before the corpse could ever reach the grave-marker spawn moment -
+    * this was never fixed historically and isn't being fixed here either.
+    */
    public boolean isDecayed() {
-      return this.getDecayProgress() >= 1.0F;
+      return this.getDecayPhase().ordinal() >= DecayPhase.HOLD_FULL_SHROUD.ordinal();
    }
 
    public boolean hasBeenOpened() {
       return this.openedByAnyone;
-   }
-
-   public float getShroudErosionProgress() {
-      return (Float)this.entityData.get(DATA_SHROUD_EROSION_PROGRESS);
    }
 
    public void setHeldItemForRender(ItemStack stack) {
@@ -238,37 +256,57 @@ public class PlayerCorpseEntity extends LivingEntity {
          this.ageInTicks++;
          if (this.isInventoryEmpty()) {
             this.emptyTicks++;
-            if (this.emptyTicks >= (Long)PlayerCorpseConfig.EMPTY_DECAY_TICKS.get()) {
-               this.fullyDecayedForced = true;
+            if (this.emptyTicks >= (Long)PlayerCorpseConfig.EMPTY_DECAY_TICKS.get() && this.phase.ordinal() < DecayPhase.HOLD_FULL_SKELETON.ordinal()) {
+               this.setPhase(DecayPhase.HOLD_FULL_SKELETON);
             }
          } else {
             this.emptyTicks = 0L;
          }
 
-         float ageProgress = Mth.clamp((float)this.ageInTicks / (float)((Long)PlayerCorpseConfig.DECAY_TICKS.get()).longValue(), 0.0F, 1.0F);
-         float progress = this.fullyDecayedForced ? 1.0F : ageProgress;
-         if (progress != this.getDecayProgress()) {
-            this.entityData.set(DATA_DECAY_PROGRESS, progress);
-         }
-
-         float erosionProgress;
-         if (this.fullyDecayedForced) {
-            erosionProgress = 1.0F;
-         } else if (progress >= 0.9934211F) {
-            this.shroudErosionTicks++;
-            erosionProgress = Mth.clamp((float)this.shroudErosionTicks / (float)((Long)PlayerCorpseConfig.SHROUD_EROSION_TICKS.get()).longValue(), 0.0F, 1.0F);
-         } else {
-            erosionProgress = 0.0F;
-         }
-
-         if (erosionProgress != this.getShroudErosionProgress()) {
-            this.entityData.set(DATA_SHROUD_EROSION_PROGRESS, erosionProgress);
-         }
-
+         this.tickDecayPhase();
          if ((Boolean)PlayerCorpseConfig.FORCE_DESPAWN_ENABLED.get() && this.ageInTicks >= (Long)PlayerCorpseConfig.FORCE_DESPAWN_TICKS.get()) {
             this.discard();
          }
       }
+   }
+
+   private static long durationTicksFor(DecayPhase decayPhase) {
+      return switch (decayPhase) {
+         case HOLD_FRESH -> (Long)PlayerCorpseConfig.HOLD_FRESH_TICKS.get();
+         case BUILD -> (Long)PlayerCorpseConfig.DECAY_TICKS.get();
+         case HOLD_FULL_SHROUD -> (Long)PlayerCorpseConfig.HOLD_FULL_SHROUD_TICKS.get();
+         case EROSION -> (Long)PlayerCorpseConfig.SHROUD_EROSION_TICKS.get();
+         case HOLD_FULL_SKELETON -> (Long)PlayerCorpseConfig.HOLD_FULL_SKELETON_TICKS.get();
+         case ASH -> (Long)PlayerCorpseConfig.ASH_TICKS.get();
+      };
+   }
+
+   private void tickDecayPhase() {
+      this.phaseTicks++;
+      long duration = durationTicksFor(this.phase);
+      float progress = Mth.clamp((float)this.phaseTicks / (float)duration, 0.0F, 1.0F);
+      if (progress != this.getPhaseProgress()) {
+         this.entityData.set(DATA_PHASE_PROGRESS, progress);
+      }
+
+      if (this.phaseTicks >= duration) {
+         if (this.phase.isFinal()) {
+            this.completeAshAndDiscard();
+         } else {
+            this.setPhase(this.phase.next());
+         }
+      }
+   }
+
+   /**
+    * Ash phase complete, discard. TODO (RECOVERY.md section 7 / Part B item
+    * 5, landing in a later step this session): spawn a PlayerGraveMarkerEntity
+    * transferring both containers first, but only if anything remains - for
+    * now this matches the pre-existing remove()'s ground-drop fallback below,
+    * no items are silently lost, they just don't get a grave marker yet.
+    */
+   private void completeAshAndDiscard() {
+      this.discard();
    }
 
    public void remove(RemovalReason reason) {
@@ -380,8 +418,8 @@ public class PlayerCorpseEntity extends LivingEntity {
       super.defineSynchedData(builder);
       builder.define(DATA_OWNER_NAME, "");
       builder.define(DATA_OWNER_UUID, Optional.empty());
-      builder.define(DATA_DECAY_PROGRESS, 0.0F);
-      builder.define(DATA_SHROUD_EROSION_PROGRESS, 0.0F);
+      builder.define(DATA_DECAY_PHASE, (byte)DecayPhase.HOLD_FRESH.ordinal());
+      builder.define(DATA_PHASE_PROGRESS, 0.0F);
       builder.define(DATA_DEATH_CAUSE, (byte)DeathCauseCategory.OTHER.ordinal());
       builder.define(DATA_HELD_ITEM, ItemStack.EMPTY);
       builder.define(DATA_EQUIPMENT_HEAD, ItemStack.EMPTY);
@@ -396,13 +434,11 @@ public class PlayerCorpseEntity extends LivingEntity {
       compound.put("Equipment", this.equipment.createTag(this.registryAccess()));
       compound.putString("OwnerName", this.getOwnerName());
       this.getOwnerUuid().ifPresent(uuid -> compound.putUUID("OwnerUUID", uuid));
-      compound.putFloat("DecayProgress", this.getDecayProgress());
-      compound.putFloat("ShroudErosionProgress", this.getShroudErosionProgress());
-      compound.putBoolean("FullyDecayedForced", this.fullyDecayedForced);
+      compound.putString("DecayPhase", this.phase.name());
+      compound.putLong("PhaseTicks", this.phaseTicks);
       compound.putBoolean("OpenedByAnyone", this.openedByAnyone);
       compound.putLong("AgeInTicks", this.ageInTicks);
       compound.putLong("EmptyTicks", this.emptyTicks);
-      compound.putLong("ShroudErosionTicks", this.shroudErosionTicks);
       compound.putIntArray("GeneralOriginalSlots", this.generalOriginalSlot);
       compound.putByte("DeathCause", (byte)this.getDeathCauseCategory().ordinal());
       if (!this.getHeldItemForRender().isEmpty()) {
@@ -421,13 +457,23 @@ public class PlayerCorpseEntity extends LivingEntity {
          this.entityData.set(DATA_OWNER_UUID, Optional.of(compound.getUUID("OwnerUUID")));
       }
 
-      this.entityData.set(DATA_DECAY_PROGRESS, compound.getFloat("DecayProgress"));
-      this.entityData.set(DATA_SHROUD_EROSION_PROGRESS, compound.getFloat("ShroudErosionProgress"));
-      this.fullyDecayedForced = compound.getBoolean("FullyDecayedForced");
+      DecayPhase savedPhase = DecayPhase.HOLD_FRESH;
+      if (compound.contains("DecayPhase")) {
+         try {
+            savedPhase = DecayPhase.valueOf(compound.getString("DecayPhase"));
+         } catch (IllegalArgumentException e) {
+            savedPhase = DecayPhase.HOLD_FRESH;
+         }
+      }
+
+      this.phase = savedPhase;
+      this.entityData.set(DATA_DECAY_PHASE, (byte)savedPhase.ordinal());
+      this.phaseTicks = compound.getLong("PhaseTicks");
+      long durationForSavedPhase = durationTicksFor(savedPhase);
+      this.entityData.set(DATA_PHASE_PROGRESS, Mth.clamp((float)this.phaseTicks / (float)durationForSavedPhase, 0.0F, 1.0F));
       this.openedByAnyone = compound.getBoolean("OpenedByAnyone");
       this.ageInTicks = compound.getLong("AgeInTicks");
       this.emptyTicks = compound.getLong("EmptyTicks");
-      this.shroudErosionTicks = compound.getLong("ShroudErosionTicks");
       int[] savedOriginalSlots = compound.getIntArray("GeneralOriginalSlots");
       if (savedOriginalSlots.length == 36) {
          System.arraycopy(savedOriginalSlots, 0, this.generalOriginalSlot, 0, 36);
