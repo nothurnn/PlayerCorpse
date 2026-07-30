@@ -232,25 +232,33 @@ public class PlayerCorpseRenderer extends LivingEntityRenderer<PlayerCorpseEntit
             try {
                if (phase == DecayPhase.EROSION) {
                   float erosion = entity.getPhaseProgress();
-                  int stage = Mth.clamp(Math.round(erosion * 8.0F), 0, 8);
+                  float scaled = erosion * 8.0F;
+                  int stageLow = Mth.clamp((int)scaled, 0, 7);
+                  int stageHigh = Mth.clamp(stageLow + 1, 0, 8);
+                  float frac = Mth.clamp(scaled - stageLow, 0.0F, 1.0F);
                   Integer lastStage = this.lastLoggedStageByEntityId.get(entityId);
-                  if (lastStage == null || lastStage != stage) {
+                  int loggedStage = Math.round(scaled);
+                  if (lastStage == null || lastStage != loggedStage) {
                      PlayerCorpseRenderer.LOGGER
                         .info(
-                           "[PlayerCorpse-DEBUG] corpse {} erosion stage -> {} at client tickCount={} ({}s), erosion={}",
-                           new Object[]{entityId, stage, tickCount, tickCount / 20.0F, erosion}
+                           "[PlayerCorpse-DEBUG] corpse {} erosion blend {}->{} frac={} at client tickCount={} ({}s), erosion={}",
+                           new Object[]{entityId, stageLow, stageHigh, frac, tickCount, tickCount / 20.0F, erosion}
                         );
-                     this.lastLoggedStageByEntityId.put(entityId, stage);
-                     logTextureStats(entityId, PlayerCorpseRenderer.SHROUD_STAGE_TEXTURES[stage], stage);
+                     this.lastLoggedStageByEntityId.put(entityId, loggedStage);
                   }
 
-                  VertexConsumer buffer = bufferSource.getBuffer(RenderType.entityTranslucent(PlayerCorpseRenderer.SHROUD_STAGE_TEXTURES[stage]));
+                  // Single premixed texture, single draw call - see BlendedTextureCache for why this
+                  // replaces the old two-overlapping-transparent-draws crossfade approach.
+                  ResourceLocation blended = BlendedTextureCache.getOrCreate(
+                     entityId, "shroud", PlayerCorpseRenderer.SHROUD_STAGE_TEXTURES[stageLow], PlayerCorpseRenderer.SHROUD_STAGE_TEXTURES[stageHigh], frac, null
+                  );
+                  VertexConsumer buffer = bufferSource.getBuffer(RenderType.entityTranslucent(blended));
                   int color = ARGB32.color(255, 255, 255, 255);
                   playerModel.renderToBuffer(poseStack, buffer, packedLight, OverlayTexture.NO_OVERLAY, color);
                   return;
                }
 
-               float alpha = phase == DecayPhase.BUILD ? entity.getPhaseProgress() : 1.0F;
+               float alpha = phase == DecayPhase.BUILD ? DecayCurves.buildAlphaCurve(entity.getPhaseProgress()) : 1.0F;
                if (phase.ordinal() > DecayPhase.BUILD.ordinal() && this.loggedBuildEndIds.add(entityId)) {
                   PlayerCorpseRenderer.LOGGER
                      .info(
