@@ -94,12 +94,27 @@ public final class BlendedTextureCache {
          int width = low.getWidth();
          int height = low.getHeight();
          NativeImage result = new NativeImage(width, height, true);
+         // baseTexture is not guaranteed to share stageLow/stageHigh's dimensions - e.g. the ash
+         // overlay's base is vanilla's skeleton.png, a legacy 64x32 mob texture, composited under
+         // 64x64 player-skin-format ash stage textures. Clamp reads into base's own bounds instead
+         // of assuming equal size (that assumption is exactly what crashed with "outside of image
+         // bounds" once a corpse reached ASH). This is provably inert for the skeleton case
+         // specifically: SkeletonModel.createBodyLayer() declares LayerDefinition.create(mesh, 64,
+         // 32) and every one of its cube texOffs falls within v=0-31 (confirmed by reading the
+         // decompiled model), so the model never samples texture rows below its own declared
+         // height in the first place - clamping the extra rows to the last real row of the base
+         // image (rather than, say, treating them as transparent) is a safe, general fallback for
+         // any mismatched baseTexture, not a skeleton-specific special case.
+         int baseWidth = base != null ? base.getWidth() : 0;
+         int baseHeight = base != null ? base.getHeight() : 0;
 
          for (int y = 0; y < height; y++) {
             for (int x = 0; x < width; x++) {
                int blended = lerpPixel(low.getPixelRGBA(x, y), high.getPixelRGBA(x, y), frac);
                if (base != null) {
-                  blended = compositeOver(blended, base.getPixelRGBA(x, y));
+                  int baseX = Math.min(x, baseWidth - 1);
+                  int baseY = Math.min(y, baseHeight - 1);
+                  blended = compositeOver(blended, base.getPixelRGBA(baseX, baseY));
                }
 
                result.setPixelRGBA(x, y, blended);
